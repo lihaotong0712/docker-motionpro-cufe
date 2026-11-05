@@ -28,7 +28,7 @@ MotionPro VPN 隧道
 容器启动后,入口脚本 `docker-entrypoint.sh` 会自动完成:
 
 1. 启动 MotionPro 守护进程 `vpnd`;
-2. 执行连接命令 `MotionPro -h $HOST -u $USER -p $PASSWD` 登录 VPN;
+2. 执行连接命令 `MotionPro -h $VPN_HOST -u $VPN_USER -p $VPN_PASSWD` 登录 VPN;
 3. 轮询等待状态变为 `VPN Status: connected`;
 4. 从 MotionPro 日志中提取 VPN 下发的 DNS 服务器,写入容器 `/etc/resolv.conf`;
 5. 启动 `danted`,把 SOCKS5 代理的出站流量绑定到 VPN 隧道网卡 `tun0`;
@@ -107,12 +107,13 @@ docker compose logs -f
 `.env` 内容:
 
 ```ini
-HOST=vpn6.cufe.edu.cn   # VPN 网关,一般不用改
-USER=你的学号
-PASSWD=你的VPN密码
+VPN_HOST=vpn6.cufe.edu.cn   # VPN 网关,一般不用改
+VPN_USER=你的学号
+VPN_PASSWD=你的VPN密码
 ```
 
-> 如果 `.env` 中的值包含 `$`、空格等特殊字符,建议用单引号包裹,例如 `PASSWD='p@ss word'`。
+> 变量名必须以 `VPN_` 开头(不要用 `USER`、`HOST` 这类系统已有环境变量名),否则 shell 环境变量会覆盖 `.env` 中的值,导致登录用户名被替换成 Linux 登录名。
+> 如果 `.env` 中的值包含 `$`、空格等特殊字符,建议用单引号包裹,例如 `VPN_PASSWD='p@ss word'`。
 
 验证代理可用:
 

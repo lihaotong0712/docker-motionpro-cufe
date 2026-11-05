@@ -14,11 +14,11 @@ RUN sed -i 's@//.*archive.ubuntu.com@//mirrors.ustc.edu.cn@g' /etc/apt/sources.l
         dante-server && \
     rm -rf /var/lib/apt/lists/*
 
-COPY MotionPro_Linux_Ubuntu_x64_v1.2.18.sh /tmp/MotionPro_Linux_Ubuntu_x64_v1.2.18.sh
+COPY MotionPro_Linux_Ubuntu_x64_build-8383-34.sh /tmp/MotionPro_Linux_Ubuntu_x64_build-8383-34.sh
 
-RUN chmod +x /tmp/MotionPro_Linux_Ubuntu_x64_v1.2.18.sh && \
-    /tmp/MotionPro_Linux_Ubuntu_x64_v1.2.18.sh && \
-    rm -f /tmp/MotionPro_Linux_Ubuntu_x64_v1.2.18.sh
+RUN chmod +x /tmp/MotionPro_Linux_Ubuntu_x64_build-8383-34.sh && \
+    /tmp/MotionPro_Linux_Ubuntu_x64_build-8383-34.sh && \
+    rm -f /tmp/MotionPro_Linux_Ubuntu_x64_build-8383-34.sh
 
 RUN useradd -r -s /sbin/nologin dante
 

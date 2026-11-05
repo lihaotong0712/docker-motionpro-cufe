@@ -94,8 +94,8 @@ configure() {
     local old_host="" old_user=""
 
     if [ -f "$ENV_FILE" ]; then
-        old_host="$(grep -E '^HOST=' "$ENV_FILE" | tail -n1 | cut -d= -f2- | tr -d "'" || true)"
-        old_user="$(grep -E '^USER=' "$ENV_FILE" | tail -n1 | cut -d= -f2- | tr -d "'" || true)"
+        old_host="$(grep -E '^VPN_HOST=' "$ENV_FILE" | tail -n1 | cut -d= -f2- | tr -d "'" || true)"
+        old_user="$(grep -E '^VPN_USER=' "$ENV_FILE" | tail -n1 | cut -d= -f2- | tr -d "'" || true)"
         echo
         warn "已存在配置文件 $ENV_FILE"
         read -r -p "是否重新配置?[y/N] " ans
@@ -140,9 +140,9 @@ configure() {
 
     {
         printf '# docker-motionpro-cufe 配置文件(由 setup.sh 生成,请勿提交到 git)\n'
-        printf 'HOST=%s\n'   "$(env_quote "$host")"
-        printf 'USER=%s\n'   "$(env_quote "$user")"
-        printf 'PASSWD=%s\n' "$(env_quote "$pass1")"
+        printf 'VPN_HOST=%s\n'   "$(env_quote "$host")"
+        printf 'VPN_USER=%s\n'   "$(env_quote "$user")"
+        printf 'VPN_PASSWD=%s\n' "$(env_quote "$pass1")"
     } > "$ENV_FILE"
     chmod 600 "$ENV_FILE"
 
