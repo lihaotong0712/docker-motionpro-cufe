@@ -1,6 +1,6 @@
 services:
   motionpro:
-    # build: .
+    build: .
     container_name: motionpro
     image: lihaotong0712/docker-motionpro:latest
     restart: unless-stopped
@@ -8,7 +8,7 @@ services:
       - /dev/net/tun:/dev/net/tun
     cap_add:
       - NET_ADMIN
-    command: MotionPro -h "${HOST}" -u "${USER}" -p "${PASSWD}" -l debug -c inf
+    command: MotionPro -h "${VPN_HOST}" -u "${VPN_USER}" -p "${VPN_PASSWD}" -l debug -c inf
     ports:
       - 10801:1080
     volumes:
