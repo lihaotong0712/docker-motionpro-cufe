@@ -1,23 +1,39 @@
 # docker-motionpro-cufe
 
-在 Docker 容器中运行**中央财经大学(CUFE)的 Array MotionPro VPN 客户端**,并在容器内提供 SOCKS5 代理。配合 Clash 等分流工具,可以让**校园网/教育网流量走 VPN,其余流量直连**,无需在电脑上安装 VPN 客户端。
+在 Docker 容器中运行**中央财经大学(CUFE)的 Array MotionPro VPN 客户端**,容器内提供 SOCKS5 代理;配套 **TUI 管理台**(配置 / 启停 / 日志 / 诊断一体化)与**一键生成的 Clash 全局扩展脚本**,实现:校园网流量自动走 VPN、VPN 掉线自动回退直连、其余流量互不影响。
 
-> 客户端版本: MotionPro Linux v1.2.18,来自 [Array Networks 官方下载页](https://client.arraynetworks.com.cn:8080/en/troubleshooting)。
+> 客户端版本: MotionPro Linux build-8383-34,来自 [Array Networks 官方下载页](https://client.arraynetworks.com.cn:8080/en/troubleshooting)。
 
 ---
 
-## 工作原理
+## 目录
 
-流量链路:
+- [一、工作原理](#一工作原理)
+- [二、环境要求](#二环境要求)
+- [三、快速开始](#三快速开始)
+- [四、TUI 管理台功能详解](#四tui-管理台功能详解)
+- [五、Clash 集成详解](#五clash-集成详解)
+- [六、使用代理](#六使用代理)
+- [七、日常管理](#七日常管理)
+- [八、安全建议](#八安全建议)
+- [九、常见问题(FAQ)](#九常见问题faq)
+- [十、项目文件说明](#十项目文件说明)
+- [十一、声明](#十一声明)
+
+---
+
+## 一、工作原理
+
+### 流量链路
 
 ```
-Clash / 浏览器 / 其他程序
+Clash(CUFE-AUTO 策略组)
         │  SOCKS5
         ▼
 宿主机 127.0.0.1:10801
         │  端口映射
         ▼
-容器内 danted(SOCKS5 服务,监听 0.0.0.0:1080)
+容器内 danted(SOCKS5 服务)
         │  出站绑定 tun0
         ▼
 MotionPro VPN 隧道
@@ -25,277 +41,261 @@ MotionPro VPN 隧道
 校园网 / 教育网资源
 ```
 
-容器启动后,入口脚本 `docker-entrypoint.sh` 会自动完成:
+### 容器内部流程
+
+容器启动后,入口脚本 `docker-entrypoint.sh` 自动完成:
 
 1. 启动 MotionPro 守护进程 `vpnd`;
-2. 执行连接命令 `MotionPro -h $VPN_HOST -u $VPN_USER -p $VPN_PASSWD` 登录 VPN;
-3. 轮询等待状态变为 `VPN Status: connected`;
-4. 从 MotionPro 日志中提取 VPN 下发的 DNS 服务器,写入容器 `/etc/resolv.conf`;
-5. 启动 `danted`,把 SOCKS5 代理的出站流量绑定到 VPN 隧道网卡 `tun0`;
-6. 每秒检测 VPN 状态,一旦掉线容器退出,由 `restart: unless-stopped` 自动拉起重连。
+2. 使用 `.env` 中的账号连接 `VPN_HOST`;
+3. 等待状态变为 `VPN Status: connected`;
+4. 从日志提取 VPN 下发的 DNS,写入容器 `/etc/resolv.conf`;
+5. 启动 `danted`(SOCKS5,出站绑定 `tun0`);
+6. 持续监测 VPN 状态,掉线即退出容器,由 `restart: unless-stopped` 自动拉起重连。
+
+### Clash 集成机制
+
+由生成的全局扩展脚本(见[五、Clash 集成详解](#五clash-集成详解))向 Clash 注入:
+
+- `CUFE-SOCKS5` 节点:指向本机 `127.0.0.1:10801`;
+- `CUFE-AUTO` 策略组:fallback 类型,**每 10 秒探测**校园网页,VPN 可用走 VPN、不可用自动回退直连、恢复后自动切回;
+- DNS 策略:校园域名走校内 DNS(查询随 `CUFE-AUTO` 分流),VPN 入口域名用公共 DNS 防回环;
+- 分流规则:回环/局域网/登录页/VPN 入口直连,校园域名与 `10.0.0.0/8` 走 VPN。
 
 ---
 
-## 环境要求
+## 二、环境要求
 
 | 项目 | 要求 |
 |---|---|
-| 操作系统 | Linux(宿主机) |
-| Docker | 20.10 及以上,含 Compose v2 插件(`docker compose` 命令) |
-| TUN 设备 | `/dev/net/tun` 存在(一般默认存在;若没有:`sudo modprobe tun`) |
-| 网络 | 宿主机能访问 VPN 网关 `vpn6.cufe.edu.cn` |
-| 账号 | 校园 VPN 账号密码(通常与信息门户账号相同) |
+| 操作系统 | Linux |
+| Docker | 20.10+,含 Compose v2 插件 |
+| TUN 设备 | `/dev/net/tun` 存在(没有则 `sudo modprobe tun`) |
+| 网络 | 能访问 VPN 网关 `vpn6.cufe.edu.cn` |
+| 账号 | 校园 VPN 账号密码(通常与信息门户一致) |
+| TUI 体验 | `gum`(可选,自动检测;缺失时回退 whiptail / 纯文本) |
 
 ---
 
-## 快速开始
+## 三、快速开始
 
-### 方式一:交互式脚本(推荐)
+### 方式一:TUI 管理台(推荐)
 
 ```bash
-cd docker-motionpro-cufe
-bash setup.sh
+./cufe-tui.sh
 ```
 
-首次运行会自动进入**配置向导**,依次完成:
+首次使用按顺序:**新建配置 → 启动 VPN 服务容器 → 校园网资源连通性测试**;要在 Clash 里分流再执行**生成 Clash 全局扩展脚本**。
 
-1. **环境自检** —— 检查 Docker、Compose 插件、`/dev/net/tun` 是否就绪;
-2. **配置账号** —— 交互输入 VPN 网关(直接回车用默认值)、学号、密码(密码不回显,需输入两次确认),自动生成 `.env` 文件并设置权限为 600;
-3. **启动服务** —— 拉取镜像并启动容器,实时显示连接进度,成功后自动测试代理连通性。
+TUI 会自适应界面框架:安装 [gum](https://github.com/charmbracelet/gum) 后体验最佳(彩色菜单 / 进度条 / 滚动查看器),未安装时自动回退 whiptail 或纯文本,功能完全一致。
 
-之后运行 `bash setup.sh`(不带参数)会进入管理菜单:
-
-| 菜单项 | 功能 |
-|---|---|
-| 1) 环境自检 | 检查 Docker / Compose / TUN 设备 |
-| 2) 配置账号 | 重新生成/修改 `.env` |
-| 3) 启动服务 | 启动容器并等待 VPN 连接 |
-| 4) 查看状态 | 容器运行状态 + VPN 连接状态 |
-| 5) 查看日志 | 实时日志(`Ctrl+C` 退出) |
-| 6) 测试连通性 | 通过代理访问校园网认证服务验证 |
-| 7) 安全设置 | 把代理限制为**仅本机可访问**(推荐开启) |
-| 8) 重启服务 | 停止后重新启动 |
-| 9) 停止服务 | 停止并移除容器 |
-
-也支持直接使用子命令,适合写进 shell 别名或脚本:
+### 方式二:纯命令行
 
 ```bash
-bash setup.sh config     # 只配置账号
-bash setup.sh start      # 启动并等待连接
-bash setup.sh status     # 查看状态
-bash setup.sh logs       # 看实时日志
-bash setup.sh test       # 测试代理连通性
-bash setup.sh security   # 切换"仅本机可访问"
-bash setup.sh restart    # 重启
-bash setup.sh stop       # 停止
-```
+# 1. 配置账号
+cp .env.example .env && vim .env
 
-### 方式二:手动配置
-
-```bash
-# 1. 生成配置文件并填入账号
-cp .env.example .env
-vim .env
-
-# 2. 启动(首次会自动拉取预构建镜像)
+# 2. 启动(首次自动构建/拉取镜像)
 docker compose up -d
 
-# 3. 观察日志,看到 "VPN Status: connected" 即成功
-docker compose logs -f
+# 3. 验证
+./cufe-tui.sh test
 ```
 
-`.env` 内容:
+`.env` 变量:
 
-```ini
-VPN_HOST=vpn6.cufe.edu.cn   # VPN 网关,一般不用改
-VPN_USER=你的学号
-VPN_PASSWD=你的VPN密码
-```
+| 变量 | 说明 |
+|---|---|
+| `VPN_HOST` | VPN 网关,默认 `vpn6.cufe.edu.cn` |
+| `VPN_USER` | 学号 |
+| `VPN_PASSWD` | VPN 密码 |
 
-> 变量名必须以 `VPN_` 开头(不要用 `USER`、`HOST` 这类系统已有环境变量名),否则 shell 环境变量会覆盖 `.env` 中的值,导致登录用户名被替换成 Linux 登录名。
-> 如果 `.env` 中的值包含 `$`、空格等特殊字符,建议用单引号包裹,例如 `VPN_PASSWD='p@ss word'`。
+> 变量名固定使用 `VPN_` 前缀,请勿改成 `USER`、`HOST` 等系统已有环境变量名——Compose 的取值优先级是 shell 环境变量高于 `.env`,重名会导致配置被覆盖、登录失败。值含特殊字符时建议用单引号包裹。
 
-验证代理可用:
+### 方式三:轻量向导 setup.sh
 
 ```bash
-curl --socks5-hostname 127.0.0.1:10801 -I https://authserver.cufe.edu.cn/authserver/login
+bash setup.sh    # 交互式菜单:配置 / 启动 / 停止 / 日志 / 测试
 ```
 
-返回 `HTTP 200` 即代表 VPN 代理已通。
+`setup.sh` 是早期的轻量管理脚本,功能与 TUI 的容器管理部分一致,可按喜好选用。
 
 ---
 
-## 使用代理
+## 四、TUI 管理台功能详解
 
-容器启动后本身就是一个**代理服务器**:容器内的 `danted` 提供 SOCKS5 服务,并已通过端口映射暴露到宿主机。基本信息:
+运行 `./cufe-tui.sh`,菜单标题实时显示 VPN 状态:
 
-| 项目 | 值 |
+| 菜单 | 功能 | 说明 |
+|---|---|---|
+| 1 | 新建/修改配置 | 无配置时显示「新建配置」;已有配置显示「修改配置」,进入后先展示现有网关/学号/密码并询问是否修改。仅填写学号和密码,单屏完成,写入 `.env`(权限 600)。容器运行中修改后会询问是否立即重启生效 |
+| 2 | 启动 VPN 服务容器 | `docker compose up -d` 后等待连接(最长 120 秒,带进度提示),成功后显示代理地址 |
+| 3 | 停止 VPN 服务容器 | `docker compose down` |
+| 4 | 查看容器日志 | 进入前先展示操作说明(如何停止、如何返回),确认后开始跟随;`Ctrl+C` 停止日志,再按回车返回菜单 |
+| 5 | 校园网资源连通性测试 | 一键体检,详见下表 |
+| 6 | 生成 Clash 全局扩展脚本 | 自动收集参数生成脚本,保存到 `generated-clash-script.js` 并自动用文本编辑器打开(可用 `$EDITOR` 指定),同时尽力复制到剪贴板;粘贴进 Clash Verge 并重新激活订阅即可生效 |
+
+连通性测试包含的项目:
+
+| 检测项 | 期望结果 |
 |---|---|
-| 代理协议 | SOCKS5 |
-| 本机使用 | `127.0.0.1:10801` |
-| 局域网使用 | `宿主机内网IP:10801`(默认对所有网卡开放) |
-| 认证方式 | 无 |
-| 出口网络 | 校园网 / 教育网 |
+| 容器状态 / VPN 状态 | Up (healthy) / connected |
+| Clash 内核 | 出现 `CUFE-AUTO` 节点(未出现说明脚本未生效) |
+| SOCKS5 直测 | 统一身份认证经代理返回 200 |
+| TUN 端到端(10 网段) | 校内 Web 服务返回 302 |
+| TUN 端到端(域名) | 认证服务返回 200 |
+| 局域网豁免 | 家庭网关直连可达 |
 
-### 本机使用(SOCKS5)
-
-任何支持 SOCKS5 的程序直接指向 `127.0.0.1:10801` 即可,流量将全部从校园网出口出去:
+TUI 同时支持命令行子命令:
 
 ```bash
-# curl
-curl --socks5-hostname 127.0.0.1:10801 https://my.cufe.edu.cn
-
-# ssh 经代理跳转到校内主机
-ssh -o ProxyCommand='nc -X 5 -x 127.0.0.1:10801 %h %p' user@校内主机IP
+./cufe-tui.sh config    # 新建/修改配置
+./cufe-tui.sh start     # 启动
+./cufe-tui.sh stop      # 停止
+./cufe-tui.sh logs      # 日志
+./cufe-tui.sh test      # 连通性测试
+./cufe-tui.sh gen       # 生成 Clash 脚本(写文件 + 剪贴板)
+./cufe-tui.sh gen-preview  # 仅打印脚本内容,不写盘
+./cufe-tui.sh help      # 帮助
 ```
 
-浏览器可配合 SwitchyOmega 等插件:新建 profile → 代理类型 `SOCKS5` → 服务器 `127.0.0.1` → 端口 `10801`。
+---
 
-### 局域网设备使用(手机、其他电脑)
+## 五、Clash 集成详解
 
-`docker-compose.yaml` 默认端口映射为 `- 10801:1080`(绑定所有网卡),因此**局域网内的设备开箱即可把这台机器当作代理服务器**:
+### 生成与安装
 
-1. 查询宿主机内网 IP:`hostname -I`(如 `192.168.1.10`);
-2. 确保宿主机防火墙放行 10801 端口(如 `sudo ufw allow 10801/tcp`);
-3. 在其他设备上配置 SOCKS5 代理,服务器填宿主机内网 IP,端口 `10801`:
-   - **电脑**:系统代理或浏览器插件(SwitchyOmega 等)指向 `192.168.1.10:10801`;
-   - **手机**:Wi-Fi 设置中手动配置代理,或用 Clash / Shadowrocket 等客户端添加 `socks5` 类型节点(服务器 `192.168.1.10`,端口 `10801`)。
+执行 TUI 菜单 6(或 `./cufe-tui.sh gen`)后:
 
-> ⚠️ **安全提醒**:该代理**没有用户名密码认证**,局域网内任何人都可以使用。请只在可信网络中共享;不需要共享时运行 `bash setup.sh security` 把端口限制为仅本机可访问(详见[安全建议](#安全建议))。
+1. 脚本自动收集参数:SOCKS5 端口、健康检查地址、Wi-Fi 登录页(`net.cufe.edu.cn` → `10.13.13.2`)、VPN 入口域名并通过 DoH 解析其真实 IP(绕过本机可能的 fake-ip DNS);
+2. 内容保存到 `generated-clash-script.js` 并自动用文本编辑器打开;
+3. 同时尽力复制到剪贴板(需安装 `wl-clipboard` 或 `xclip`,未安装会给出提示);
+4. 打开 **Clash Verge → 订阅页 → 全局扩展脚本**,粘贴脚本内容保存,**重新激活订阅**;
+5. 用 TUI「连通性测试」验证:内核出现 `CUFE-AUTO` 即生效。
 
-### HTTP 代理(danted 仅支持 SOCKS5)
+> 生成器只产出文件与剪贴板内容,不会直接修改你的 Clash 配置——是否启用、何时启用完全由你决定。
 
-容器内的 danted 只提供 SOCKS5 协议,不支持 HTTP 代理。如果某些软件只认 HTTP 代理,可在宿主机加一层 HTTP → SOCKS5 转换:
+### 注入的分流规则
 
-**方案一:gost(Docker 一行命令,推荐)**
+| 规则 | 目标 |
+|---|---|
+| `127.0.0.0/8`、`::1` | DIRECT |
+| `net.cufe.edu.cn`、`10.13.13.2`(Wi-Fi 登录页) | DIRECT |
+| `vpn6.cufe.edu.cn` 及其入口 IP(VPN 登录流量) | DIRECT |
+| `*.cufe.edu.cn` | CUFE-AUTO |
+| `10.0.0.0/8`(校园内网) | CUFE-AUTO |
+| `172.16.0.0/12`、`192.168.0.0/16`、`fc00::/7` | DIRECT |
+
+`CUFE-AUTO` 为 fallback 组:VPN 节点探测失败时自动切 `CUFE-DIRECT`,恢复后自动切回,全程无需人工干预。
+
+### 备选:订阅级分流
+
+如果不想用全局扩展脚本,也可以把 `clash.example.yaml` 中的 `proxies` / `proxy-groups` / `rules` 三段手动合并进订阅配置,效果相同(该文件还包含更完整的教育网 IP 段清单,可按需摘取)。
+
+---
+
+## 六、使用代理
+
+代理启动后,宿主机 `127.0.0.1:10801` 即为 SOCKS5 代理,出口为校园网。
+
+**本机使用:**
 
 ```bash
+curl --socks5-hostname 127.0.0.1:10801 https://my.cufe.edu.cn
+ssh -o ProxyCommand='nc -X 5 -x 127.0.0.1:10801 %h %p' user@校内主机
+```
+
+浏览器可用 SwitchyOmega 等插件:类型 `SOCKS5`,服务器 `127.0.0.1`,端口 `10801`。
+
+**局域网设备使用**(默认端口映射绑定所有网卡):其他设备把代理指向 `宿主机内网IP:10801` 即可,需防火墙放行该端口。注意代理无认证,请仅在可信网络共享;不需要共享时把 `docker-compose.yaml` 的端口映射改为 `127.0.0.1:10801:1080`(仅本机可访问)。
+
+**HTTP 代理**:danted 仅支持 SOCKS5。需要 HTTP 代理时可在宿主机加一层转换:
+
+```bash
+# 方案一:gost(容器一行命令)
 docker run -d --name gost-http --restart=unless-stopped --network host \
     ginuerzh/gost -L "http://:10802" -F "socks5://127.0.0.1:10801"
-```
 
-之后 `宿主机IP:10802` 即为 HTTP 代理,流量经由 SOCKS5 → VPN 从校园网出去。
-
-**方案二:privoxy(宿主机直接安装)**
-
-```bash
+# 方案二:privoxy
 sudo apt install privoxy
 echo 'forward-socks5 / 127.0.0.1:10801 .' | sudo tee -a /etc/privoxy/config
-echo 'listen-address 0.0.0.0:10802'     | sudo tee -a /etc/privoxy/config
+echo 'listen-address 0.0.0.0:10802' | sudo tee -a /etc/privoxy/config
 sudo systemctl restart privoxy
 ```
 
-### Clash 分流(本项目设计的主要用法)
-
-参考仓库中的 `clash.example.yaml`,把下面三段合并进你现有的 Clash 配置:
-
-- **`proxies`** —— 本地代理节点:
-
-  ```yaml
-  proxies:
-    - name: CUFE-local-vpn
-      port: 10801
-      server: 127.0.0.1
-      type: socks5
-  ```
-
-- **`proxy-groups`** —— 名为 `CUFE` 的策略组(带 fallback 掉线检测);
-
-- **`rules`** —— 分流规则:`*.cufe.edu.cn`、教育网 IP 段(59.64/59.65/121.194/202.205.208-223 等)走 `CUFE`,其余全部 `DIRECT`。
-
-配置中的 DNS 部分还把 `+.cufe.edu.cn` 指向校内 DNS `202.205.208.6`,保证校内域名能解析到正确的内网地址。
-
-效果:**日常流量直连,只有访问校内资源时才经过 VPN**,无需手动切换。
-
 ---
 
-## 日常管理
+## 七、日常管理
 
-| 操作 | 脚本方式 | 等价的 docker 命令 |
+| 操作 | TUI | 命令行 |
 |---|---|---|
-| 启动 | `bash setup.sh start` | `docker compose up -d` |
-| 停止 | `bash setup.sh stop` | `docker compose down` |
-| 重启 | `bash setup.sh restart` | `docker compose restart` |
-| 状态 | `bash setup.sh status` | `docker compose ps` |
-| 日志 | `bash setup.sh logs` | `docker compose logs -f` |
+| 配置账号 | 菜单 1 | `./cufe-tui.sh config` |
+| 启动 | 菜单 2 | `./cufe-tui.sh start` |
+| 停止 | 菜单 3 | `./cufe-tui.sh stop` |
+| 日志 | 菜单 4 | `./cufe-tui.sh logs` |
+| 连通性测试 | 菜单 5 | `./cufe-tui.sh test` |
+| 生成 Clash 脚本 | 菜单 6 | `./cufe-tui.sh gen` |
+| 等价 docker 命令 | — | `docker compose up -d` / `down` / `logs -f` / `ps` |
 
-运行日志同时会持久化到宿主机 `./logs/` 目录(MotionPro 运行日志),排查认证失败等问题优先看这里。
+说明:
 
-VPN 掉线时容器会自动退出并被 Docker 重新拉起(策略 `unless-stopped`),正常情况下无需人工干预。
-
----
-
-## 安全建议
-
-容器内的 SOCKS5 代理**无认证**。`docker-compose.yaml` 默认把端口映射到宿主机所有网卡,方便局域网设备共享,但也意味着**同一局域网内的任何人都能使用你的 VPN 代理**:
-
-- **只在本机使用**(推荐):执行 `bash setup.sh security`,自动把端口映射改为 `127.0.0.1:10801:1080`(仅本机可访问),并提示是否重建容器使其生效;再次运行该选项可恢复局域网共享;
-- **需要共享给局域网设备**:保持默认即可,但请确保所在网络可信(家庭/个人网络),不要在公共 Wi-Fi 等不可信网络下开放。
-
-其他建议:
-
-- `.env` 含账号密码,已在 `.gitignore` 中排除,**不要提交到仓库或分享给他人**;
-- 如需改用其他端口,修改 `docker-compose.yaml` 中 `ports` 的宿主机侧端口,并同步修改 Clash 配置里的 `port`。
+- VPN 掉线时容器自动退出并被拉起重连;但手动 `stop` 过之后,重启电脑不会自动拉起,需再次执行启动;
+- 运行日志同时持久化在 `./logs/`(MotionPro 日志),排查认证问题优先看这里;
+- 验证代理出口:`curl --socks5-hostname 127.0.0.1:10801 https://myip.ipip.net`,显示校园网 IP 段(59.64.x.x、121.194.x.x 等)即正确。
 
 ---
 
-## 常见问题(FAQ)
+## 八、安全建议
 
-**1. 启动后一直无法 connected,提示认证失败?**
-先用 `bash setup.sh logs` 查看日志。确认账号密码正确、账号未锁定;VPN 密码通常与信息门户一致,若修改过门户密码需使用新密码。部分学校限制同时在线设备数,超出时也会失败。
-
-**2. 宿主机 10801 端口被占用?**
-`sudo ss -ltnp | grep 10801` 查看占用进程。若是其他程序,修改 `docker-compose.yaml` 中 `ports` 的宿主机侧端口(如 `- 20801:1080`),并同步修改 Clash 配置。
-
-**3. 提示 `/dev/net/tun` 不存在?**
-执行 `sudo modprobe tun` 加载内核模块;若宿主机是容器/虚拟机,需要宿主层开启 TUN 设备。
-
-**4. 修改了 Dockerfile 或 docker-entrypoint.sh 后如何生效?**
-默认使用的是预构建镜像 `lihaotong0712/docker-motionpro:latest`,不会应用你的修改。把 `docker-compose.yaml` 中的 `# build: .` 取消注释,然后执行:
-
-```bash
-docker compose up --build -d
-```
-
-(本地构建需要仓库中的 `MotionPro_Linux_Ubuntu_x64_v1.2.18.sh` 安装脚本。)
-
-**5. 想换 VPN 网关或账号?**
-重新运行 `bash setup.sh config`,或直接编辑 `.env`,然后 `bash setup.sh restart` 生效。
-
-**6. 如何确认当前出口 IP?**
-
-```bash
-curl --socks5-hostname 127.0.0.1:10801 https://myip.ipip.net
-```
-
-显示校园网 IP 段(如 59.64.x.x、121.194.x.x)即说明代理已从校园网出口出去。
-
-**7. 局域网里的其他设备连不上代理?**
-按顺序检查:
-① 是否运行过 `bash setup.sh security`——它会限制为仅本机访问,局域网设备将无法连接,重新运行一次该选项可恢复共享;
-② 宿主机防火墙是否放行 10801 端口(`sudo ufw status` 查看);
-③ 设备与宿主机是否在同一网段,代理地址填的是否为**宿主机的内网 IP**(不是 127.0.0.1)。
+- 容器内的 SOCKS5 代理**无认证**,默认映射到宿主机所有网卡:同一局域网内的任何设备都可以使用你的 VPN 代理;
+- 仅本机使用时,建议把 `docker-compose.yaml` 中 `ports` 改为 `127.0.0.1:10801:1080`;
+- 需要共享给局域网设备时保持默认,但请确保网络可信,勿在公共 Wi-Fi 下开放;
+- `.env` 含账号密码,已被 `.gitignore` 排除,**不要提交或分享**。
 
 ---
 
-## 项目文件说明
+## 九、常见问题(FAQ)
+
+**1. 启动后一直无法 connected?**
+先看日志(TUI 菜单 4)。确认账号密码正确、账号未锁定;VPN 密码通常与信息门户一致。连续多次失败会触发网关账号锁定(一般 15~30 分钟),请先在浏览器打开 `https://vpn6.cufe.edu.cn` 人工验证凭据,确认可用后再启动容器。
+
+**2. Clash 菜单里没有出现 CUFE-AUTO(连通性测试提示"CUFE 节点未加载")?**
+说明全局扩展脚本尚未生效:确认已把生成的脚本粘贴到 Clash Verge 的「全局扩展脚本」并保存,然后**重新激活订阅**(订阅页点击当前订阅卡片,或设置中重启内核),再跑一次连通性测试。
+
+**3. 宿主机 10801 端口被占用?**
+`sudo ss -ltnp | grep 10801` 查看占用;若是其他程序,修改 `docker-compose.yaml` 中 `ports` 的宿主机侧端口,并同步修改 Clash 脚本里 `CUFE-SOCKS5` 的 `port` 后重新生成。
+
+**4. 提示 `/dev/net/tun` 不存在?**
+执行 `sudo modprobe tun`;若宿主机本身是容器/虚拟机,需要宿主层开启 TUN 设备。
+
+**5. 修改了 Dockerfile 或入口脚本后如何生效?**
+`docker-compose.yaml` 已默认启用本地构建(`build: .`),执行 `docker compose up --build -d` 即可。本地构建依赖仓库中的 `MotionPro_Linux_Ubuntu_x64_build-8383-34.sh` 安装包;更换客户端版本时,替换安装包文件并同步修改 `Dockerfile` 中的文件名。
+
+**6. 想更换账号或网关?**
+TUI 菜单 1(或 `./cufe-tui.sh config`),完成后按提示重启容器。
+
+**7. 局域网设备连不上代理?**
+依次检查:① 是否已把端口映射改为 `127.0.0.1` 前缀;② 宿主机防火墙是否放行 10801;③ 设备填的是否为宿主机内网 IP。
+
+---
+
+## 十、项目文件说明
 
 | 文件 | 说明 |
 |---|---|
-| `setup.sh` | 交互式配置与管理脚本(环境自检/配置/启停/测试) |
-| `docker-compose.yaml` | 服务编排:端口映射、TUN 设备、`NET_ADMIN` 权限、环境变量 |
+| `cufe-tui.sh` | TUI 管理台:配置 / 启停 / 日志 / 诊断 / Clash 脚本生成一体化(gum / whiptail / 纯文本自适应) |
+| `generated-clash-script.js` | TUI 生成的 Clash 全局扩展脚本(已加入 `.gitignore`) |
+| `setup.sh` | 轻量交互式管理脚本(容器生命周期 + 配置) |
+| `docker-compose.yaml` | 服务编排:本地构建、端口映射、TUN 设备、`NET_ADMIN` 权限、环境变量 |
 | `Dockerfile` | 镜像构建:Ubuntu 18.04 + dante-server + MotionPro 客户端 |
-| `docker-entrypoint.sh` | 容器入口脚本:连接 VPN、配置 DNS、启动 danted、掉线检测 |
-| `danted.conf` | Dante SOCKS5 服务配置(无认证,出站走 tun0) |
-| `danted.example.conf` | Dante 官方示例配置,仅作参考 |
-| `clash.example.yaml` | Clash 分流配置示例 |
-| `.env.example` | 环境变量模板,复制为 `.env` 后填写 |
-| `MotionPro_Linux_Ubuntu_x64_v1.2.18.sh` | MotionPro 官方安装脚本(Ubuntu 版,构建镜像时使用) |
-| `MotionPro_Linux_CentOS_x64_v1.2.18.sh` | MotionPro 官方安装脚本(CentOS 版,当前未使用) |
-| `logs/`(运行时生成) | MotionPro 运行日志,已加入 `.gitignore` |
+| `docker-entrypoint.sh` | 容器入口:连 VPN、配 DNS、起 danted、掉线检测 |
+| `danted.conf` | Dante SOCKS5 配置(无认证,出站走 tun0) |
+| `clash.example.yaml` | Clash 订阅级分流配置示例(含完整教育网 IP 段) |
+| `.env.example` | 环境变量模板(`VPN_HOST` / `VPN_USER` / `VPN_PASSWD`) |
+| `MotionPro_Linux_Ubuntu_x64_build-8383-34.sh` | MotionPro 官方 Linux 安装脚本(构建镜像时使用) |
+| `logs/`(运行时生成) | MotionPro 运行日志 |
 
 ---
 
-## 声明
+## 十一、声明
 
 本项目仅供个人学习与访问校内资源使用,请在遵守学校信息化管理规定的前提下合理使用,勿用于绕过网络管控等违规用途。
